@@ -1,132 +1,144 @@
-# Fraud monitoring HW11
+# Мониторинг мошеннических транзакций — ДЗ 5
 
-Real-time fraud scoring with Kafka, CatBoost, PostgreSQL, Prometheus and Grafana. A transaction simulator continuously publishes events, the scorer hot-reloads CatBoost models without restarting, and the writer persists enriched scores for operational and business analytics.
+Система потокового скоринга транзакций на основе Kafka, CatBoost, PostgreSQL, Prometheus и Grafana. Симулятор непрерывно отправляет транзакции в Kafka, сервис скоринга применяет модель CatBoost и подхватывает новые версии без перезапуска, а writer сохраняет обогащённые результаты в PostgreSQL для технического и бизнес-мониторинга.
 
-## Data policy
+## Используемые данные
 
-The raw dataset is not part of this repository. Its download page does not provide a redistribution license that can be safely assumed, and the rows contain person-like fields. Download `train.csv` from the authorized [TETA ML competition page](https://www.kaggle.com/competitions/teta-ml-1-2025/data) and keep it outside the repository. `*.csv`, `data/` and local `.env` files are ignored by Git.
+Исходный датасет не включён в репозиторий. На странице загрузки нет лицензии, которая явно разрешала бы повторное распространение, а строки содержат поля, похожие на персональные данные. Загрузите `train.csv` из доступного вам источника — [страницы соревнования TETA ML](https://www.kaggle.com/competitions/teta-ml-1-2025/data) — и храните файл вне репозитория. Файлы `*.csv`, каталог `data/` и локальный `.env` исключены через `.gitignore`.
 
-The required columns are:
+Ожидаемые столбцы:
 
 `transaction_time, merch, cat_id, amount, name_1, name_2, gender, street, one_city, us_state, post_code, lat, lon, population_city, jobs, merchant_lat, merchant_lon, target`.
 
-## Start
+## Быстрый запуск
 
-Requirements: Docker Desktop or Docker Engine with the Compose plugin, at least 8 GB of free disk space, and the authorized `train.csv`.
+Понадобятся:
+
+- Docker Desktop или Docker Engine с плагином Compose;
+- не менее 8 ГБ свободного места;
+- файл `train.csv`, полученный законным способом.
+
+Создайте локальный файл настроек:
 
 ```bash
 cp .env.example .env
 ```
 
-Set `TRAIN_DATA_CSV` in `.env` to the absolute path of `train.csv`, then run:
+Укажите в `.env` абсолютный путь к `train.csv` в переменной `TRAIN_DATA_CSV`, затем запустите стек:
 
 ```bash
 docker compose up -d --build
 docker compose ps
 ```
 
-The first start builds the CatBoost and Airflow images and copies the CSV into PostgreSQL. Wait until `data_loader` exits with code 0 and the long-running services are up.
+При первом запуске собираются образы CatBoost и Airflow, а данные загружаются в PostgreSQL. Дождитесь, пока одноразовый сервис `data_loader` завершится с кодом `0`, а постоянные сервисы перейдут в состояние `Up`.
 
-| Service | Address | Credentials |
+| Сервис | Адрес | Данные для входа |
 |---|---|---|
-| Grafana | http://localhost:3000 | `admin` / `admin` |
-| Prometheus | http://localhost:9090 | none |
-| Kafka UI | http://localhost:8080 | none |
-| Airflow | http://localhost:8081 | `admin` / `admin` |
-| Scorer metrics | http://localhost:8000 | none |
-| Writer metrics | http://localhost:8001 | none |
+| Grafana | <http://localhost:3000> | `admin` / `admin` |
+| Prometheus | <http://localhost:9090> | не требуются |
+| Kafka UI | <http://localhost:8080> | не требуются |
+| Airflow | <http://localhost:8081> | `admin` / `admin` |
+| Метрики scorer | <http://localhost:8000> | не требуются |
+| Метрики writer | <http://localhost:8001> | не требуются |
 | PostgreSQL | `localhost:5432/fraud_db` | `fraud_user` / `fraud_pass` |
 
-To stop without deleting volumes:
+Остановка без удаления данных:
 
 ```bash
 docker compose down
 ```
 
-To perform a clean demonstration from empty Kafka, PostgreSQL and model volumes:
+Чистый демонстрационный запуск с пустыми томами Kafka, PostgreSQL и реестра моделей:
 
 ```bash
 docker compose down -v
 docker compose up -d --build
 ```
 
-## Architecture
+## Архитектура
 
 ```text
-train.csv -> transaction_simulator -> Kafka transactions
-                                      |
-                                      v
-model registry -> CatBoost scorer -> Kafka scoring -> PostgreSQL writer -> scores
-       ^                 |                                  |
-       |                 +------------ metrics ------------+
-       |                                                    |
-Airflow retraining                                      Prometheus
-                                                            |
-PostgreSQL -------------------------------------------> Grafana
-Node Exporter ----------------------------------------> Prometheus
+train.csv -> симулятор транзакций -> Kafka: transactions
+                                           |
+                                           v
+реестр моделей -> CatBoost scorer -> Kafka: scoring -> PostgreSQL writer -> scores
+       ^                  |                                      |
+       |                  +-------------- метрики ---------------+
+       |                                                         |
+переобучение Airflow                                         Prometheus
+                                                                 |
+PostgreSQL -------------------------------------------------> Grafana
+Node Exporter ---------------------------------------------> Prometheus
 ```
 
-All services share the `ml-scorer` Docker network. Prometheus scrapes every second. Grafana provisions both data sources, four dashboards and two alerts from files in the repository.
+Все контейнеры работают в Docker-сети `ml-scorer`. Prometheus опрашивает сервисы каждую секунду. Grafana автоматически получает два источника данных, четыре дашборда и два правила оповещения из файлов репозитория.
 
-## Prometheus metrics
+## Метрики Prometheus
 
-Scorer metrics:
+Метрики scorer:
 
-- `transactions_total`: successfully scored transactions.
-- `transaction_processing_seconds`: processing latency histogram.
-- `fraud_score`: score histogram.
-- `fraud_ratio`: cumulative share above the 0.5 threshold.
-- `model_version_updates_total{version}`: model load events, including the initial version.
-- `fraud_model_info{version}` and `fraud_model_reload_timestamp_seconds{version}`: active version and reload time.
-- `transaction_processing_errors_total{stage}`: scoring failures.
-- `transaction_last_success_timestamp_seconds`: stream liveness.
-- `transaction_amount`: amount histogram. This project-specific metric helps separate latency or fraud-rate changes caused by a shift toward unusually large transactions; it is shown as Transaction amount p95 on Fraud scoring live.
+- `transactions_total` — количество успешно обработанных транзакций;
+- `transaction_processing_seconds` — гистограмма времени обработки;
+- `fraud_score` — распределение fraud score;
+- `fraud_ratio` — накопленная доля транзакций со score выше `0.5`;
+- `model_version_updates_total{version}` — загрузки версий модели, включая начальную;
+- `fraud_model_info{version}` — активная версия модели;
+- `fraud_model_reload_timestamp_seconds{version}` — время загрузки версии;
+- `transaction_processing_errors_total{stage}` — ошибки скоринга по этапам;
+- `transaction_last_success_timestamp_seconds` — время последнего успешного скоринга;
+- `transaction_amount` — распределение сумм транзакций. На дашборде отображается p95, чтобы отделять изменения нагрузки и fraud rate от сдвига в сторону необычно крупных покупок.
 
-Writer metrics:
+Метрики writer:
 
-- `scorings_total`: rows written.
-- `scoring_db_write_seconds`: database latency histogram.
-- `fraud_detected_total`: rows with `fraud_flag=1`.
-- `scoring_fraud_score`: persisted score histogram.
-- `scoring_db_write_errors_total`: write failures.
-- `scoring_last_write_timestamp_seconds`: writer liveness.
+- `scorings_total` — количество строк, записанных в PostgreSQL;
+- `scoring_db_write_seconds` — гистограмма задержки записи;
+- `fraud_detected_total` — количество строк с `fraud_flag=1`;
+- `scoring_fraud_score` — распределение сохранённых значений score;
+- `scoring_db_write_errors_total` — ошибки записи;
+- `scoring_last_write_timestamp_seconds` — время последней успешной записи.
 
-Node Exporter provides CPU, memory, network and filesystem metrics.
+Node Exporter предоставляет метрики процессора, памяти, сети и файловой системы.
 
-## Grafana dashboards
+## Дашборды Grafana
 
-All dashboards have the tag `fraud-monitoring-hw11`.
+Все дашборды помечены техническим тегом `fraud-monitoring-hw11`:
 
-1. **Fraud scoring live**: TPS, p95 latency, fraud share, score density, errors, amount p95 and model-reload annotations.
-2. **PostgreSQL writer live**: write TPS, p95 latency, fraud detection rate, persisted score density, write errors and time since last write.
-3. **Host system metrics**: CPU, memory, network and filesystem usage.
-4. **Fraud business analytics**: PostgreSQL-backed analytics with `US state` and `Merchant` filters, filtered score density and TPS, counts and fraud share by model version, fraud share by product category in the latest 1000 rows, average score by hour and a recent-score table.
+1. **Fraud scoring live** — TPS, p95 задержки, доля мошенничества, распределение score, ошибки, p95 суммы транзакции и аннотации смены модели.
+2. **PostgreSQL writer live** — TPS записи, p95 задержки БД, частота обнаружения мошенничества, распределение сохранённых score, ошибки и время с последней записи.
+3. **Host system metrics** — процессор, память, сеть и файловая система.
+4. **Fraud business analytics** — аналитика PostgreSQL с фильтрами `US state` и `Merchant`, отфильтрованными score density и TPS, показателями по версиям модели, долей мошенничества по товарным категориям для последних 1000 строк, средним score по часам и таблицей последних результатов.
 
-If panels are empty, verify Prometheus targets at http://localhost:9090/targets and check that rows are growing:
+Если панели пустые, проверьте цели Prometheus на <http://localhost:9090/targets> и рост таблицы `scores`:
 
 ```bash
 docker compose exec -T postgres psql -U fraud_user -d fraud_db -c \
   "SELECT COUNT(*) AS scores, MAX(created_at) AS latest FROM scores;"
 ```
 
-## Alerts
+## Алерты Grafana
 
-Grafana provisions two rules in **Alerting > Alert rules > Fraud monitoring**:
+В разделе **Alerting → Alert rules → Fraud monitoring** автоматически создаются два правила:
 
-- **Fraud rate is high**: `fraud_ratio > 0.20` for 20 seconds. For a deterministic test, temporarily lower the threshold in `grafana/provisioning/alerting/rules.yaml`, restart Grafana and observe Pending then Firing.
-- **Transaction stream stopped**: no successful scoring event for more than 20 seconds. Test it with `docker compose stop transaction_simulator`; restart with `docker compose start transaction_simulator`.
+- **Fraud rate is high** — `fraud_ratio > 0.20` в течение 20 секунд. Для детерминированной демонстрации можно временно снизить порог в `grafana/provisioning/alerting/rules.yaml`, перезапустить Grafana и дождаться состояний `Pending`, затем `Firing`.
+- **Transaction stream stopped** — успешный скоринг отсутствует более 20 секунд. Для проверки остановите поток командой `docker compose stop transaction_simulator`, затем восстановите его командой `docker compose start transaction_simulator`.
 
-No email or Telegram contact point is required.
+Подключение email или Telegram для выполнения задания не требуется.
 
-## Model retraining and hot-reload
+## Переобучение и горячая смена модели
 
-Airflow exposes two DAGs: `supply_labeled_batch` and `retrain_catboost`. The scorer reads the shared `model_registry` volume before each inference. A retraining run writes `my_catboost_<version>.cbm` and atomically updates `latest.txt`; the next message loads that version without restarting the scorer.
+Airflow содержит два DAG:
 
-To verify immediately:
+- `supply_labeled_batch` добавляет очередной размеченный временной пакет;
+- `retrain_catboost` формирует обучающую выборку, обучает CatBoost и публикует новую версию.
 
-1. Open Airflow and trigger `retrain_catboost` (trigger `supply_labeled_batch` first only when the next labeled month is missing).
-2. Wait for the DAG to succeed.
-3. Check the registry and database:
+Scorer проверяет общий том `model_registry` перед каждым предсказанием. После переобучения появляется файл `my_catboost_<version>.cbm`, а `latest.txt` атомарно переключается на новую версию. Следующее сообщение обрабатывается новой моделью без перезапуска scorer.
+
+Проверка hot-reload:
+
+1. Откройте Airflow и запустите `retrain_catboost`. `supply_labeled_batch` требуется запускать вручную только при отсутствии следующего размеченного месяца.
+2. Дождитесь состояния `success` у DAG.
+3. Проверьте реестр и версии в PostgreSQL:
 
 ```bash
 docker compose exec -T airflow sh -lc 'cat /opt/airflow/models/latest.txt && ls -1 /opt/airflow/models'
@@ -134,9 +146,9 @@ docker compose exec -T postgres psql -U fraud_user -d fraud_db -c \
   "SELECT model_version, COUNT(*), AVG(fraud_flag)::numeric(8,4) AS fraud_share FROM scores GROUP BY model_version ORDER BY model_version;"
 ```
 
-4. Open Fraud scoring live. A red model annotation appears and new database rows use the new `model_version`.
+4. Откройте **Fraud scoring live**. На графике появится красная аннотация смены модели, а новые строки PostgreSQL будут содержать новый `model_version`.
 
-## Verification commands
+## Проверка проекта
 
 ```bash
 python3 scripts/generate_dashboards.py
@@ -145,8 +157,12 @@ docker compose config --quiet
 curl -fsS http://localhost:8000/metrics | grep '^transactions_total'
 curl -fsS http://localhost:8001/metrics | grep '^scorings_total'
 curl -fsS http://localhost:9090/api/v1/targets
-curl -u admin:admin -fsS http://localhost:3000/api/search?tag=fraud-monitoring-hw11
+curl -u admin:admin -fsS 'http://localhost:3000/api/search?tag=fraud-monitoring-hw11'
 curl -u admin:admin -fsS http://localhost:3000/api/v1/provisioning/alert-rules
 ```
 
-The dashboard JSON is generated by `scripts/generate_dashboards.py`; edit the compact definitions and regenerate rather than hand-editing exported Grafana JSON.
+JSON-файлы дашбордов создаются скриптом `scripts/generate_dashboards.py`. Изменяйте компактные определения в скрипте и запускайте генерацию повторно вместо ручного редактирования экспортированного JSON.
+
+## Автоматическая проверка GitHub
+
+Workflow **Build Docker Images** запускается при каждом push и pull request в `main`. Он без внешних секретов собирает Docker-образы `fraud_detector`, `transaction_simulator`, `scoring_writer`, `data_loader` и `airflow`. Успешный workflow подтверждает, что все пять образов воспроизводимо собираются в чистой среде GitHub Actions.
