@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import sys
+import time
 
 import pandas as pd
 from confluent_kafka import Consumer
@@ -30,9 +31,10 @@ SCORING_TOPIC = os.getenv("KAFKA_SCORING_TOPIC", "scoring")
 METRICS_PORT = int(os.getenv("METRICS_PORT", "8000"))
 SCORE_BUCKETS = [i / 50.0 for i in range(51)]
 
-PROCESSING_TIME = Summary(
+PROCESSING_TIME = Histogram(
     'transaction_processing_seconds',
     'Время обработки транзакции',
+    buckets=(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5),
 )
 TRANSACTION_COUNT = Counter(
     'transactions_total',
@@ -51,6 +53,30 @@ MODEL_VERSION_UPDATES = Counter(
     'model_version_updates_total',
     'Смена версии модели при горячей подмене',
     ['version'],
+)
+MODEL_INFO = Gauge(
+    'fraud_model_info',
+    'Активная версия модели',
+    ['version'],
+)
+MODEL_RELOAD_TIMESTAMP = Gauge(
+    'fraud_model_reload_timestamp_seconds',
+    'Время загрузки версии модели',
+    ['version'],
+)
+PROCESSING_ERRORS = Counter(
+    'transaction_processing_errors_total',
+    'Ошибки скоринга',
+    ['stage'],
+)
+AMOUNT = Histogram(
+    'transaction_amount',
+    'Распределение сумм обработанных транзакций',
+    buckets=(1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 10000),
+)
+LAST_SUCCESS = Gauge(
+    'transaction_last_success_timestamp_seconds',
+    'Время последнего успешного скоринга',
 )
 
 
@@ -76,8 +102,14 @@ class ProcessingService:
     def _record_model_version(self, model_version):
         if self._seen_model_version is None:
             self._seen_model_version = model_version
+            MODEL_INFO.labels(version=model_version).set(1)
+            MODEL_RELOAD_TIMESTAMP.labels(version=model_version).set(time.time())
+            MODEL_VERSION_UPDATES.labels(version=model_version).inc()
             return
         if model_version != self._seen_model_version:
+            MODEL_INFO.labels(version=self._seen_model_version).set(0)
+            MODEL_INFO.labels(version=model_version).set(1)
+            MODEL_RELOAD_TIMESTAMP.labels(version=model_version).set(time.time())
             MODEL_VERSION_UPDATES.labels(version=model_version).inc()
             logger.info(
                 "Модель сменилась: %s -> %s",
@@ -103,6 +135,7 @@ class ProcessingService:
             score = float(y_proba[0])
             TRANSACTION_COUNT.inc()
             FRAUD_SCORE.observe(score)
+            AMOUNT.observe(float(data['data'].get('amount') or 0))
             self.total_transactions += 1
             if score > 0.5:
                 self.fraud_transactions += 1
@@ -112,6 +145,8 @@ class ProcessingService:
             # Добавляем ID и версию модели, которая отскорила запрос
             submission['transaction_id'] = transaction_id
             submission['model_version'] = model_version
+            for column in ('us_state', 'merch', 'cat_id', 'amount'):
+                submission[column] = data['data'].get(column)
 
             # Отправка результата в топик scoring
             self.producer.produce(
@@ -119,8 +154,10 @@ class ProcessingService:
                 value=submission.to_json(orient='records'),
             )
             self.producer.flush()
+            LAST_SUCCESS.set(time.time())
             return True
         except Exception as e:
+            PROCESSING_ERRORS.labels(stage='message').inc()
             logger.exception(f"Error processing message: {e}")
             return False
 

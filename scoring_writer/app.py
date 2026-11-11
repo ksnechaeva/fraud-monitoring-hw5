@@ -4,7 +4,7 @@ import os
 
 import psycopg2
 from confluent_kafka import Consumer
-from prometheus_client import Counter, Histogram, Summary, start_http_server
+from prometheus_client import Counter, Gauge, Histogram, start_http_server
 
 # Настройка логгирования
 logging.basicConfig(level=logging.INFO)
@@ -13,7 +13,11 @@ logger = logging.getLogger(__name__)
 METRICS_PORT = int(os.getenv("METRICS_PORT", "8001"))
 SCORE_BUCKETS = [i / 50.0 for i in range(51)]
 
-DB_WRITE_TIME = Summary('scoring_db_write_seconds', 'Время записи скоринга в БД')
+DB_WRITE_TIME = Histogram(
+    'scoring_db_write_seconds',
+    'Время записи скоринга в БД',
+    buckets=(0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1),
+)
 SCORING_COUNT = Counter('scorings_total', 'Общее количество записанных скорингов')
 FRAUD_SCORE_HISTOGRAM = Histogram(
     'scoring_fraud_score',
@@ -24,6 +28,8 @@ FRAUD_COUNT = Counter(
     'fraud_detected_total',
     'Количество обнаруженных мошеннических транзакций',
 )
+DB_WRITE_ERRORS = Counter('scoring_db_write_errors_total', 'Ошибки записи скоров')
+LAST_WRITE = Gauge('scoring_last_write_timestamp_seconds', 'Время последней успешной записи')
 
 
 def get_db_config():
@@ -45,12 +51,23 @@ def create_table(conn):
                 score FLOAT NOT NULL,
                 fraud_flag INT NOT NULL,
                 model_version TEXT,
+                us_state TEXT,
+                merch TEXT,
+                cat_id TEXT,
+                amount DOUBLE PRECISION,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         """)
         cur.execute("""
             ALTER TABLE scores ADD COLUMN IF NOT EXISTS model_version TEXT;
         """)
+        for column, sql_type in (
+            ('us_state', 'TEXT'), ('merch', 'TEXT'), ('cat_id', 'TEXT'),
+            ('amount', 'DOUBLE PRECISION'),
+        ):
+            cur.execute(f"ALTER TABLE scores ADD COLUMN IF NOT EXISTS {column} {sql_type}")
+        cur.execute("CREATE INDEX IF NOT EXISTS scores_created_at_idx ON scores (created_at)")
+        cur.execute("CREATE INDEX IF NOT EXISTS scores_filters_idx ON scores (us_state, merch, created_at)")
         conn.commit()
         logger.info("Таблица 'scores' проверена или создана.")
 
@@ -59,13 +76,20 @@ def create_table(conn):
 def insert_score(conn, data):
     with conn.cursor() as cur:
         cur.execute("""
-            INSERT INTO scores (transaction_id, score, fraud_flag, model_version)
-            VALUES (%s, %s, %s, %s);
+            INSERT INTO scores (
+                transaction_id, score, fraud_flag, model_version,
+                us_state, merch, cat_id, amount
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s);
         """, (
             data["transaction_id"],
             data["score"],
             data["fraud_flag"],
             data.get("model_version"),
+            data.get("us_state"),
+            data.get("merch"),
+            data.get("cat_id"),
+            data.get("amount"),
         ))
         conn.commit()
 
@@ -73,6 +97,7 @@ def insert_score(conn, data):
     FRAUD_SCORE_HISTOGRAM.observe(data["score"])
     if data["fraud_flag"] == 1:
         FRAUD_COUNT.inc()
+    LAST_WRITE.set_to_current_time()
 
 
 def run_consumer():
@@ -126,6 +151,7 @@ def run_consumer():
             except json.JSONDecodeError as je:
                 logger.exception(f"Ошибка декодирования JSON: {je}")
             except Exception as e:
+                DB_WRITE_ERRORS.inc()
                 logger.exception(f"Ошибка обработки сообщения: {e}")
 
     except KeyboardInterrupt:

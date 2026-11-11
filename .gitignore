@@ -2,5 +2,9 @@
 .env
 *.DS_Store
 *.csv
+data/
+*.parquet
+*.cbm
+!fraud_detector/models/my_catboost.cbm
 __pycache__/
 *.py[cod]

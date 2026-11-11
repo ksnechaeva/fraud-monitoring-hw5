@@ -9,7 +9,8 @@ RUN mkdir -p /app/logs && \
 
 # Установка зависимостей
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt && \
+    pip install --no-cache-dir --no-deps catboost==1.2.8
 
 # Копирование исходного кода
 COPY . .

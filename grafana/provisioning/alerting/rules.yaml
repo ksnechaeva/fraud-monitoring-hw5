@@ -1,0 +1,101 @@
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: fraud-service-alerts
+    folder: Fraud monitoring
+    interval: 10s
+    rules:
+      - uid: fraud-rate-high
+        title: Fraud rate is high
+        condition: C
+        for: 20s
+        noDataState: NoData
+        execErrState: Error
+        annotations:
+          summary: Fraud share has remained above 20 percent for 20 seconds.
+        labels:
+          severity: warning
+          service: fraud_detector
+        data:
+          - refId: A
+            relativeTimeRange: {from: 60, to: 0}
+            datasourceUid: PBFA97CFB590B2093
+            model:
+              datasource: {type: prometheus, uid: PBFA97CFB590B2093}
+              editorMode: code
+              expr: fraud_ratio
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            relativeTimeRange: {from: 0, to: 0}
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              expression: A
+              reducer: last
+              refId: B
+              type: reduce
+          - refId: C
+            relativeTimeRange: {from: 0, to: 0}
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator: {params: [0.2], type: gt}
+                  operator: {type: and}
+                  query: {params: [C]}
+                  reducer: {params: [], type: last}
+                  type: query
+              datasource: {type: __expr__, uid: __expr__}
+              expression: B
+              refId: C
+              type: threshold
+      - uid: transaction-stream-stopped
+        title: Transaction stream stopped
+        condition: C
+        for: 20s
+        noDataState: Alerting
+        execErrState: Error
+        annotations:
+          summary: No successful scoring event has been observed for more than 20 seconds.
+        labels:
+          severity: critical
+          service: fraud_detector
+        data:
+          - refId: A
+            relativeTimeRange: {from: 60, to: 0}
+            datasourceUid: PBFA97CFB590B2093
+            model:
+              datasource: {type: prometheus, uid: PBFA97CFB590B2093}
+              editorMode: code
+              expr: time() - transaction_last_success_timestamp_seconds
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            relativeTimeRange: {from: 0, to: 0}
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              expression: A
+              reducer: last
+              refId: B
+              type: reduce
+          - refId: C
+            relativeTimeRange: {from: 0, to: 0}
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator: {params: [20], type: gt}
+                  operator: {type: and}
+                  query: {params: [C]}
+                  reducer: {params: [], type: last}
+                  type: query
+              datasource: {type: __expr__, uid: __expr__}
+              expression: B
+              refId: C
+              type: threshold
+

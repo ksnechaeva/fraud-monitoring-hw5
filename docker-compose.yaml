@@ -90,6 +90,7 @@ services:
         condition: service_healthy
       kafka-setup:
         condition: service_completed_successfully
+    restart: unless-stopped
 
   postgres:
     image: postgres:15
@@ -152,6 +153,7 @@ services:
         condition: service_healthy
       kafka-setup:
         condition: service_completed_successfully
+    restart: unless-stopped
 
   data_loader:
     build: ./data_loader
@@ -229,6 +231,7 @@ services:
       - '--web.console.templates=/usr/share/prometheus/consoles'
     networks:
       - ml-scorer
+    restart: unless-stopped
 
   grafana:
     image: grafana/grafana:latest
@@ -239,13 +242,18 @@ services:
       - ./grafana/provisioning:/etc/grafana/provisioning
       - ./grafana/dashboards:/var/lib/grafana/dashboards
     environment:
-      - GF_SECURITY_ADMIN_PASSWORD=admin
-      - GF_USERS_ALLOW_SIGN_UP=false
-      - GF_DASHBOARDS_MIN_REFRESH_INTERVAL=1s
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_DASHBOARDS_MIN_REFRESH_INTERVAL: 1s
+      GF_UNIFIED_ALERTING_ENABLED: "true"
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
     depends_on:
       - prometheus
     networks:
       - ml-scorer
+    restart: unless-stopped
 
   node-exporter:
     image: prom/node-exporter:latest

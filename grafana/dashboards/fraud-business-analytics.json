@@ -1,0 +1,263 @@
+{
+  "id": null,
+  "uid": "fraud-business-analytics",
+  "title": "Fraud business analytics",
+  "tags": [
+    "fraud-monitoring-hw11"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5s",
+  "time": {
+    "from": "now-15m",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "state",
+        "label": "US state",
+        "type": "query",
+        "datasource": {
+          "type": "postgres",
+          "uid": "fraud-postgres"
+        },
+        "query": "SELECT DISTINCT us_state AS __text, us_state AS __value FROM scores WHERE us_state IS NOT NULL ORDER BY 1",
+        "refresh": 2,
+        "includeAll": true,
+        "allValue": "%",
+        "multi": false
+      },
+      {
+        "name": "merch",
+        "label": "Merchant",
+        "type": "query",
+        "datasource": {
+          "type": "postgres",
+          "uid": "fraud-postgres"
+        },
+        "query": "SELECT DISTINCT merch AS __text, merch AS __value FROM scores WHERE merch IS NOT NULL AND us_state LIKE '$state' ORDER BY 1",
+        "refresh": 2,
+        "includeAll": true,
+        "allValue": "%",
+        "multi": false
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Score density by selected state and merchant",
+      "type": "barchart",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "fraud-postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT width_bucket(score, 0, 1, 20) / 20.0 AS bucket, COUNT(*) AS count FROM scores WHERE $__timeFilter(created_at) AND us_state LIKE '$state' AND merch LIKE '$merch' GROUP BY 1 ORDER BY 1"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Filtered processing TPS",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "fraud-postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT date_trunc('second', created_at) AS time, COUNT(*)::double precision AS tps FROM scores WHERE $__timeFilter(created_at) AND us_state LIKE '$state' AND merch LIKE '$merch' GROUP BY 1 ORDER BY 1"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Fraud share by model version",
+      "type": "table",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "fraud-postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT model_version, COUNT(*) AS scores, AVG(fraud_flag)::double precision AS fraud_share FROM scores WHERE $__timeFilter(created_at) GROUP BY model_version ORDER BY model_version"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Fraud share by category in last 1000 transactions",
+      "type": "barchart",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "fraud-postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH recent AS (SELECT cat_id, fraud_flag FROM scores ORDER BY created_at DESC LIMIT 1000) SELECT cat_id, AVG(fraud_flag)::double precision AS fraud_share FROM recent GROUP BY cat_id ORDER BY fraud_share DESC"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Average score by transaction hour",
+      "type": "barchart",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 16
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "fraud-postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT EXTRACT(HOUR FROM created_at)::int AS hour, AVG(score)::double precision AS avg_score FROM scores WHERE $__timeFilter(created_at) GROUP BY 1 ORDER BY 1"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Latest scores",
+      "type": "table",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 16
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "fraud-postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT created_at, us_state, merch, cat_id, amount, score, fraud_flag, model_version FROM scores WHERE us_state LIKE '$state' AND merch LIKE '$merch' ORDER BY created_at DESC LIMIT 100"
+        }
+      ]
+    }
+  ],
+  "annotations": {
+    "list": []
+  }
+}
